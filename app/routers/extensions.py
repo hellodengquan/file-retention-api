@@ -3,12 +3,15 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_active_user, RoleChecker, log_audit, get_client_ip
+from app.auth import (
+    get_current_active_user_checked, RoleChecker, log_audit, get_client_ip
+)
 from app.database import get_db
 from app import crud
 from app.models import User
 from app.schemas import (
-    ExtensionRequestCreate, ExtensionRequestDecision, ExtensionRequestResponse, PaginatedResponse
+    ExtensionRequestCreate, ExtensionRequestDecision, ExtensionRequestResponse,
+    PaginatedResponse, ExtensionCancelRequest
 )
 from typing import List
 
@@ -21,7 +24,7 @@ def create_extension_request(
     request_in: ExtensionRequestCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     file = crud.get_file(db, request_in.file_id)
     if not file:
@@ -50,7 +53,7 @@ def list_extension_requests(
     status: Optional[str] = None,
     requester_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if current_user.role == "operator":
         requester_id = current_user.id
@@ -65,7 +68,7 @@ def list_extension_requests(
 def get_extension_request(
     request_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     ext_request = crud.get_extension_request(db, request_id)
     if not ext_request:
@@ -81,13 +84,13 @@ def get_extension_request(
     return ext_request
 
 
-@router.post("/{request_id}/decide", response_model=ExtensionRequestResponse, dependencies=[Depends(role_admin_manager)])
-def decide_extension_request(
+@router.post("/{request_id}/cancel", response_model=ExtensionRequestResponse)
+def cancel_extension_request(
     request_id: int,
-    decision: ExtensionRequestDecision,
+    cancel_req: ExtensionCancelRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     ext_request = crud.get_extension_request(db, request_id)
     if not ext_request:
@@ -98,7 +101,48 @@ def decide_extension_request(
     if ext_request.status != "pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="该请求已处理"
+            detail="只能取消待处理的申请"
+        )
+    if current_user.role == "operator" and ext_request.requester_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只能取消自己提交的申请"
+        )
+    cancelled = crud.cancel_extension_request(
+        db, request_id, current_user.id, cancel_req.reason
+    )
+    ip = get_client_ip(request)
+    reason = cancel_req.reason or "未填写原因"
+    log_audit(
+        db, current_user, "cancel_extension_request", "extension", request_id,
+        f"取消延期申请: 文件ID={ext_request.file_id}, 原因: {reason}", ip
+    )
+    return cancelled
+
+
+@router.post("/{request_id}/decide", response_model=ExtensionRequestResponse, dependencies=[Depends(role_admin_manager)])
+def decide_extension_request(
+    request_id: int,
+    decision: ExtensionRequestDecision,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user_checked)
+):
+    ext_request = crud.get_extension_request(db, request_id)
+    if not ext_request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="审批请求不存在"
+        )
+    if ext_request.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该请求已处理或已取消"
+        )
+    if decision.status == "cancelled":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请使用 /cancel 接口取消申请"
         )
     updated = crud.decide_extension_request(
         db, request_id, decision.status, current_user.id, decision.approval_notes

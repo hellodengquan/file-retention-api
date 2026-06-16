@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 
 from app.auth import get_password_hash
 from app.models import (
@@ -55,11 +56,23 @@ def update_user(db: Session, user_id: int, user_in: UserUpdate) -> Optional[User
     return db_user
 
 
-def update_user_password(db: Session, user_id: int, new_password: str) -> Optional[User]:
+def update_user_password(db: Session, user_id: int, new_password: str, clear_must_change: bool = True) -> Optional[User]:
     db_user = get_user(db, user_id)
     if not db_user:
         return None
     db_user.hashed_password = get_password_hash(new_password)
+    if clear_must_change:
+        db_user.must_change_password = False
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def set_must_change_password(db: Session, user_id: int, must_change: bool = True) -> Optional[User]:
+    db_user = get_user(db, user_id)
+    if not db_user:
+        return None
+    db_user.must_change_password = must_change
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -206,8 +219,42 @@ def update_file(db: Session, file_id: int, file_in: FileRecordUpdate) -> Optiona
     if not db_file:
         return None
     update_data = file_in.model_dump(exclude_unset=True)
+
+    old_category = db_file.business_category
     for field, value in update_data.items():
         setattr(db_file, field, value)
+
+    if "business_category" in update_data and update_data["business_category"] != old_category:
+        policy = get_policy_by_category(db, db_file.business_category)
+        db_file.policy_id = policy.id if policy else None
+        if policy:
+            base_expiry = db_file.upload_date + timedelta(days=policy.retention_days)
+            if db_file.last_extended_at and db_file.expiry_date:
+                original_expiry = (db_file.upload_date + timedelta(days=getattr(db_file.policy, 'retention_days', 0) if db_file.policy else 0))
+                extension_days = (db_file.expiry_date - original_expiry).days
+                if extension_days > 0:
+                    base_expiry = base_expiry + timedelta(days=extension_days)
+            db_file.expiry_date = base_expiry
+
+    if "status" in update_data:
+        if update_data["status"] == "archived":
+            db_file.archived_at = datetime.utcnow()
+        elif update_data["status"] == "active":
+            db_file.archived_at = None
+
+    db.commit()
+    db.refresh(db_file)
+    return db_file
+
+
+def restore_file(db: Session, file_id: int) -> Optional[FileRecord]:
+    db_file = get_file(db, file_id)
+    if not db_file:
+        return None
+    if db_file.status not in ("archived", "expired"):
+        return None
+    db_file.status = "active"
+    db_file.archived_at = None
     db.commit()
     db.refresh(db_file)
     return db_file
@@ -317,35 +364,107 @@ def decide_extension_request(
     return db_request
 
 
+def cancel_extension_request(
+    db: Session,
+    request_id: int,
+    canceller_id: int,
+    cancel_reason: Optional[str] = None
+) -> Optional[ExtensionRequest]:
+    db_request = get_extension_request(db, request_id)
+    if not db_request:
+        return None
+    if db_request.status != "pending":
+        return None
+    db_request.status = "cancelled"
+    db_request.approver_id = canceller_id
+    db_request.approval_notes = cancel_reason or "申请人取消"
+    db_request.decided_at = datetime.utcnow()
+    db.commit()
+    db.refresh(db_request)
+    return db_request
+
+
 def list_audit_logs(
     db: Session,
     skip: int = 0,
     limit: int = 100,
     user_id: Optional[int] = None,
+    username: Optional[str] = None,
     action: Optional[str] = None,
-    resource_type: Optional[str] = None
+    resource_type: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    ip_address: Optional[str] = None,
+    keyword: Optional[str] = None
 ) -> List[AuditLog]:
     query = db.query(AuditLog)
     if user_id:
         query = query.filter(AuditLog.user_id == user_id)
+    if username:
+        query = query.filter(AuditLog.username == username)
     if action:
         query = query.filter(AuditLog.action == action)
     if resource_type:
         query = query.filter(AuditLog.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditLog.resource_id == resource_id)
+    if start_time:
+        query = query.filter(AuditLog.timestamp >= start_time)
+    if end_time:
+        query = query.filter(AuditLog.timestamp <= end_time)
+    if ip_address:
+        query = query.filter(AuditLog.ip_address.like(f"%{ip_address}%"))
+    if keyword:
+        keyword_pattern = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                AuditLog.action.like(keyword_pattern),
+                AuditLog.details.like(keyword_pattern),
+                AuditLog.username.like(keyword_pattern),
+                AuditLog.resource_type.like(keyword_pattern)
+            )
+        )
     return query.order_by(AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
 
 
 def count_audit_logs(
     db: Session,
     user_id: Optional[int] = None,
+    username: Optional[str] = None,
     action: Optional[str] = None,
-    resource_type: Optional[str] = None
+    resource_type: Optional[str] = None,
+    resource_id: Optional[int] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    ip_address: Optional[str] = None,
+    keyword: Optional[str] = None
 ) -> int:
     query = db.query(AuditLog)
     if user_id:
         query = query.filter(AuditLog.user_id == user_id)
+    if username:
+        query = query.filter(AuditLog.username == username)
     if action:
         query = query.filter(AuditLog.action == action)
     if resource_type:
         query = query.filter(AuditLog.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditLog.resource_id == resource_id)
+    if start_time:
+        query = query.filter(AuditLog.timestamp >= start_time)
+    if end_time:
+        query = query.filter(AuditLog.timestamp <= end_time)
+    if ip_address:
+        query = query.filter(AuditLog.ip_address.like(f"%{ip_address}%"))
+    if keyword:
+        keyword_pattern = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                AuditLog.action.like(keyword_pattern),
+                AuditLog.details.like(keyword_pattern),
+                AuditLog.username.like(keyword_pattern),
+                AuditLog.resource_type.like(keyword_pattern)
+            )
+        )
     return query.count()

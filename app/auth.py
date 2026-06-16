@@ -82,11 +82,23 @@ async def get_current_active_user(
     return current_user
 
 
+async def get_current_active_user_checked(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    if current_user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="首次登录必须先修改密码，请调用 /api/v1/auth/change-password 接口修改密码",
+            headers={"X-Must-Change-Password": "true"}
+        )
+    return current_user
+
+
 class RoleChecker:
     def __init__(self, allowed_roles: list):
         self.allowed_roles = allowed_roles
 
-    def __call__(self, user: User = Depends(get_current_active_user)):
+    def __call__(self, user: User = Depends(get_current_active_user_checked)):
         if user.role not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

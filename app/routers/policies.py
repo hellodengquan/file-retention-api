@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_active_user, RoleChecker, log_audit, get_client_ip
+from app.auth import get_current_active_user_checked, RoleChecker, log_audit, get_client_ip
 from app.database import get_db
 from app import crud
 from app.models import User
@@ -21,7 +21,7 @@ def create_policy(
     policy_in: RetentionPolicyCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if crud.get_policy_by_category(db, policy_in.business_category):
         raise HTTPException(
@@ -43,7 +43,7 @@ def list_policies(
     limit: int = 100,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     policies = crud.list_policies(db, skip=skip, limit=limit, is_active=is_active)
     total = crud.count_policies(db, is_active=is_active)
@@ -54,7 +54,7 @@ def list_policies(
 def get_policy(
     policy_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     policy = crud.get_policy(db, policy_id)
     if not policy:
@@ -69,7 +69,7 @@ def get_policy(
 def get_policy_by_category(
     business_category: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     policy = crud.get_policy_by_category(db, business_category)
     if not policy:
@@ -86,7 +86,7 @@ def update_policy(
     policy_in: RetentionPolicyUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     policy = crud.update_policy(db, policy_id, policy_in)
     if not policy:
@@ -107,7 +107,7 @@ def delete_policy(
     policy_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     policy = crud.get_policy(db, policy_id)
     if not policy:

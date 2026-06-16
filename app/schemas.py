@@ -20,6 +20,7 @@ class UserBase(BaseModel):
     full_name: Optional[str] = None
     email: Optional[EmailStr] = None
     role: str = Field(default="operator", pattern="^(admin|manager|operator)$")
+    must_change_password: Optional[bool] = False
 
 
 class UserCreate(UserBase):
@@ -105,6 +106,7 @@ class FileRecordCreate(FileRecordBase):
 class FileRecordUpdate(BaseModel):
     file_name: Optional[str] = None
     file_path: Optional[str] = None
+    business_category: Optional[str] = Field(default=None, max_length=100)
     notes: Optional[str] = None
     status: Optional[str] = Field(default=None, pattern="^(active|archived|deleted|expired)$")
 
@@ -130,6 +132,7 @@ class FileRecordResponse(FileRecordBase):
     policy_id: Optional[int] = None
     created_by: int
     last_extended_at: Optional[datetime] = None
+    archived_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -146,7 +149,7 @@ class ExtensionRequestCreate(ExtensionRequestBase):
 
 
 class ExtensionRequestDecision(BaseModel):
-    status: str = Field(..., pattern="^(approved|rejected)$")
+    status: str = Field(..., pattern="^(approved|rejected|cancelled)$")
     approval_notes: Optional[str] = None
 
 
@@ -206,4 +209,20 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 class PasswordChange(BaseModel):
     old_password: str
+    new_password: str = Field(..., min_length=6)
+
+
+class TokenWithPasswordChange(Token):
+    must_change_password: bool
+
+
+class FileRestoreRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class ExtensionCancelRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class ForceResetPassword(BaseModel):
     new_password: str = Field(..., min_length=6)

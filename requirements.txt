@@ -10,3 +10,5 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.6
 apscheduler==3.10.4
+slowapi==0.1.9
+tenacity==8.2.3

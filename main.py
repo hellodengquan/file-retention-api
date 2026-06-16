@@ -3,6 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.database import engine, Base, SessionLocal
 from app.models import User, RetentionPolicy
@@ -15,6 +19,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 
 def init_db():
@@ -29,7 +35,8 @@ def init_db():
                 full_name="系统管理员",
                 email="admin@example.com",
                 role="admin",
-                is_active=True
+                is_active=True,
+                must_change_password=True
             )
             db.add(admin)
 
@@ -41,7 +48,8 @@ def init_db():
                 full_name="部门经理",
                 email="manager@example.com",
                 role="manager",
-                is_active=True
+                is_active=True,
+                must_change_password=True
             )
             db.add(manager)
 
@@ -53,7 +61,8 @@ def init_db():
                 full_name="普通操作员",
                 email="operator@example.com",
                 role="operator",
-                is_active=True
+                is_active=True,
+                must_change_password=True
             )
             db.add(operator)
 
@@ -121,9 +130,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="文件保留策略API",
     description="文件保留策略管理系统API，支持按业务类别设置保留期限、到期自动归档/删除、人工延期审批、操作日志记录等功能",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -135,8 +148,10 @@ app.add_middleware(
 
 api_router = FastAPI(
     title="文件保留策略API - v1",
-    version="1.0.0"
+    version="1.1.0"
 )
+api_router.state.limiter = limiter
+api_router.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 api_router.include_router(auth.router)
 api_router.include_router(users.router)
@@ -152,9 +167,10 @@ app.mount("/api/v1", api_router)
 def root():
     return {
         "name": "文件保留策略API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "docs": "/docs",
-        "api_prefix": "/api/v1"
+        "api_prefix": "/api/v1",
+        "rate_limit": "60 requests/minute per IP"
     }
 
 

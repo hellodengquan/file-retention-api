@@ -18,6 +18,7 @@ class User(Base):
     email = Column(String(100))
     role = Column(String(20), nullable=False, default="operator")
     is_active = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     extension_requests = relationship("ExtensionRequest", foreign_keys="ExtensionRequest.requester_id", back_populates="requester")
@@ -54,6 +55,7 @@ class FileRecord(Base):
     policy_id = Column(Integer, ForeignKey("retention_policies.id"))
     created_by = Column(Integer, ForeignKey("users.id"))
     last_extended_at = Column(DateTime)
+    archived_at = Column(DateTime)
     notes = Column(Text)
 
     policy = relationship("RetentionPolicy", back_populates="files")

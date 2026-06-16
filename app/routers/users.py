@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_active_user, RoleChecker, log_audit, get_client_ip
+from app.auth import get_current_active_user_checked, RoleChecker, log_audit, get_client_ip
 from app.database import get_db
 from app import crud
 from app.models import User
 from app.schemas import (
-    UserCreate, UserUpdate, UserResponse, PaginatedResponse
+    UserCreate, UserUpdate, UserResponse, PaginatedResponse, ForceResetPassword
 )
-from typing import List
+from typing import Optional, List
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
 role_admin = RoleChecker(["admin"])
@@ -19,7 +19,7 @@ def create_user(
     user_in: UserCreate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if crud.get_user_by_username(db, user_in.username):
         raise HTTPException(
@@ -37,7 +37,7 @@ def list_users(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if current_user.role != "admin":
         limit = min(limit, 10)
@@ -50,7 +50,7 @@ def list_users(
 def get_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if current_user.role != "admin" and current_user.id != user_id:
         raise HTTPException(
@@ -72,7 +72,7 @@ def update_user(
     user_in: UserUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if current_user.role != "admin" and current_user.id != user_id:
         raise HTTPException(
@@ -95,12 +95,60 @@ def update_user(
     return user
 
 
+@router.post("/{user_id}/reset-password", dependencies=[Depends(role_admin)])
+def force_reset_password(
+    user_id: int,
+    reset_in: ForceResetPassword,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user_checked)
+):
+    user = crud.get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在"
+        )
+    crud.update_user_password(db, user_id, reset_in.new_password, clear_must_change=False)
+    crud.set_must_change_password(db, user_id, must_change=True)
+    ip = get_client_ip(request)
+    log_audit(
+        db, current_user, "force_reset_password", "user", user_id,
+        f"管理员强制重置用户密码: {user.username}, 需首次登录修改", ip
+    )
+    return {"message": "密码已重置，该用户下次登录时必须修改密码"}
+
+
+@router.delete("/{user_id}/force-change-password", dependencies=[Depends(role_admin)])
+def force_user_change_password(
+    user_id: int,
+    must_change: bool = True,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user_checked)
+):
+    user = crud.get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在"
+        )
+    crud.set_must_change_password(db, user_id, must_change=must_change)
+    ip = get_client_ip(request)
+    action = "启用" if must_change else "取消"
+    log_audit(
+        db, current_user, "set_must_change_password", "user", user_id,
+        f"{action}用户 {user.username} 的强制改密标记", ip
+    )
+    return {"message": f"已设置用户 {user.username} 的强制改密标记为 {must_change}"}
+
+
 @router.delete("/{user_id}", dependencies=[Depends(role_admin)])
 def delete_user(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user_checked)
 ):
     if current_user.id == user_id:
         raise HTTPException(
