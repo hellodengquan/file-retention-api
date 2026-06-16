@@ -143,6 +143,36 @@ def force_user_change_password(
     return {"message": f"已设置用户 {user.username} 的强制改密标记为 {must_change}"}
 
 
+@router.post("/{user_id}/revoke-tokens", dependencies=[Depends(role_admin)])
+def revoke_user_tokens(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user_checked)
+):
+    user = crud.get_user(db, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在"
+        )
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能撤销自己的 token，请重新登录"
+        )
+    revoked_user = crud.revoke_user_tokens(db, user_id)
+    ip = get_client_ip(request)
+    log_audit(
+        db, current_user, "revoke_user_tokens", "user", user_id,
+        f"管理员撤销用户 {user.username} 的所有 Token，新版本: {revoked_user.token_version}", ip
+    )
+    return {
+        "message": f"已撤销用户 {user.username} 的所有有效 Token",
+        "new_token_version": revoked_user.token_version
+    }
+
+
 @router.delete("/{user_id}", dependencies=[Depends(role_admin)])
 def delete_user(
     user_id: int,

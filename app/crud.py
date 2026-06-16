@@ -80,6 +80,16 @@ def set_must_change_password(db: Session, user_id: int, must_change: bool = True
     return db_user
 
 
+def revoke_user_tokens(db: Session, user_id: int) -> Optional[User]:
+    db_user = get_user(db, user_id)
+    if not db_user:
+        return None
+    db_user.token_version = (db_user.token_version or 1) + 1
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
 def delete_user(db: Session, user_id: int) -> bool:
     db_user = get_user(db, user_id)
     if not db_user:
@@ -310,7 +320,7 @@ def batch_rematch_policies(
     db: Session,
     business_category: Optional[str] = None,
     dry_run: bool = False
-) -> Tuple[int, int, int]:
+) -> Tuple[int, int, int, List[dict]]:
     query = db.query(FileRecord).filter(FileRecord.status == "active")
     if business_category:
         query = query.filter(FileRecord.business_category == business_category)
@@ -318,12 +328,16 @@ def batch_rematch_policies(
     total_files = query.count()
     matched_count = 0
     updated_count = 0
+    changes = []
     
     for file_record in query.all():
         policy = get_policy_by_category(db, file_record.business_category)
         if policy:
             matched_count += 1
             new_expiry = file_record.upload_date + timedelta(days=policy.retention_days)
+            old_expiry = file_record.expiry_date
+            old_policy_id = file_record.policy_id
+            
             if file_record.last_extended_at and file_record.expiry_date:
                 original_expiry = file_record.upload_date + timedelta(
                     days=getattr(file_record.policy, 'retention_days', 0) if file_record.policy else 0
@@ -334,6 +348,15 @@ def batch_rematch_policies(
             
             if file_record.expiry_date != new_expiry or file_record.policy_id != policy.id:
                 updated_count += 1
+                changes.append({
+                    "file_id": file_record.id,
+                    "file_name": file_record.file_name,
+                    "business_category": file_record.business_category,
+                    "old_policy_id": old_policy_id,
+                    "new_policy_id": policy.id,
+                    "old_expiry_date": old_expiry.isoformat() if old_expiry else None,
+                    "new_expiry_date": new_expiry.isoformat() if new_expiry else None,
+                })
                 if not dry_run:
                     file_record.policy_id = policy.id
                     file_record.expiry_date = new_expiry
@@ -341,7 +364,7 @@ def batch_rematch_policies(
     if not dry_run:
         db.commit()
     
-    return total_files, matched_count, updated_count
+    return total_files, matched_count, updated_count, changes
 
 
 def create_extension_request(

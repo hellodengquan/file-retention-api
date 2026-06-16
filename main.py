@@ -1,5 +1,6 @@
 import logging
 import time
+import ipaddress
 from contextlib import asynccontextmanager
 from collections import defaultdict
 
@@ -33,6 +34,30 @@ def get_client_ip(request: Request) -> str:
     return client_ip
 
 
+def _parse_cidr_list(cidr_list):
+    networks = []
+    for cidr in cidr_list:
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.warning(f"无效的 CIDR 白名单: {cidr}，已跳过")
+    return networks
+
+
+_whitelist_networks = _parse_cidr_list(settings.RATE_LIMIT_WHITELIST_IPS)
+
+
+def is_ip_whitelisted(ip_str: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+        for network in _whitelist_networks:
+            if ip_obj in network:
+                return True
+    except ValueError:
+        pass
+    return ip_str in settings.RATE_LIMIT_WHITELIST_IPS
+
+
 limiter = Limiter(key_func=get_client_ip, default_limits=["60/minute"])
 
 
@@ -43,7 +68,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         client_ip = get_client_ip(request)
-        if client_ip in settings.RATE_LIMIT_WHITELIST_IPS:
+        if is_ip_whitelisted(client_ip):
             response = await call_next(request)
             response.headers["X-RateLimit-Whitelisted"] = "true"
             return response

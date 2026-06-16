@@ -10,6 +10,7 @@ from app.auth import (
 )
 from app.database import get_db
 from app import crud
+from app.config import settings
 from app.models import User
 from app.schemas import (
     FileRecordCreate, FileRecordUpdate, FileRecordResponse, PaginatedResponse,
@@ -144,17 +145,27 @@ def restore_archived_file(
             detail="权限不足"
         )
     can_restore, msg = crud.can_restore_file(db, file_id)
+    ip = get_client_ip(request)
+    reason = restore_req.reason or "未填写原因"
+
     if not can_restore:
+        log_audit(
+            db, current_user, "restore_file_denied", "file", file_id,
+            f"恢复文件被拒绝: {file.file_name}, 原因: {msg}, 申请原因: {reason}, "
+            f"归档时间: {file.archived_at if file.archived_at else 'N/A'}, "
+            f"回退窗口: {settings.ARCHIVE_RESTORE_WINDOW_DAYS}天", ip
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=msg
         )
+
     restored = crud.restore_file(db, file_id)
-    ip = get_client_ip(request)
-    reason = restore_req.reason or "未填写原因"
     log_audit(
         db, current_user, "restore_file", "file", file_id,
-        f"恢复文件: {file.file_name}, 原因: {reason}", ip
+        f"恢复文件: {file.file_name}, 原因: {reason}, "
+        f"归档时间: {file.archived_at if file.archived_at else 'N/A'}, "
+        f"回退窗口: {settings.ARCHIVE_RESTORE_WINDOW_DAYS}天", ip
     )
     return restored
 
@@ -188,7 +199,7 @@ def batch_rematch_policies(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user_checked)
 ):
-    total, matched, updated = crud.batch_rematch_policies(
+    total, matched, updated, changes = crud.batch_rematch_policies(
         db, business_category=rematch_req.business_category,
         dry_run=rematch_req.dry_run
     )
@@ -203,5 +214,6 @@ def batch_rematch_policies(
         "total": total,
         "matched": matched,
         "updated": updated,
-        "dry_run": rematch_req.dry_run
+        "dry_run": rematch_req.dry_run,
+        "changes": changes
     }

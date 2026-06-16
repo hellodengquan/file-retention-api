@@ -10,7 +10,9 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     before_sleep_log,
-    retry_if_exception_type
+    retry_if_exception_type,
+    before_log,
+    after_log
 )
 
 from app.config import settings
@@ -23,6 +25,41 @@ logger = logging.getLogger(__name__)
 MAX_RETRY_ATTEMPTS = settings.SCHEDULER_MAX_RETRY_ATTEMPTS
 RETRY_MIN_WAIT = settings.SCHEDULER_RETRY_MIN_WAIT_SECONDS
 RETRY_MAX_WAIT = settings.SCHEDULER_RETRY_MAX_WAIT_SECONDS
+
+
+def log_retry_alert(job_id: str, attempt: int, wait_seconds: float, exception: Exception):
+    db = SessionLocal()
+    try:
+        audit_log = AuditLog(
+            user_id=None,
+            username="system",
+            action=f"scheduler_{job_id}_retry_alert",
+            resource_type="scheduler_alert",
+            resource_id=None,
+            details=f"调度任务重试告警: 任务={job_id}, 第{attempt}次重试, "
+                    f"等待{wait_seconds:.1f}秒, 异常={str(exception)[:200]}",
+            ip_address="system"
+        )
+        db.add(audit_log)
+        db.commit()
+        logger.warning(
+            f"[告警] 任务 {job_id} 第 {attempt} 次重试，等待 {wait_seconds:.1f} 秒: {str(exception)[:100]}"
+        )
+    except Exception as e:
+        logger.error(f"记录重试告警日志时出错: {str(e)}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _before_sleep_callback(retry_state):
+    job_id = getattr(retry_state.fn, '__name__', 'unknown')
+    attempt = retry_state.attempt_number
+    wait_time = retry_state.next_action.sleep if retry_state.next_action else 0
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    if exception:
+        log_retry_alert(job_id, attempt, wait_time, exception)
+    before_sleep_log(logger, logging.WARNING)(retry_state)
 
 
 def log_job_failure(job_id: str, exception: Exception):
@@ -60,7 +97,7 @@ def scheduler_event_listener(event: JobEvent):
 @retry(
     stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=RETRY_MIN_WAIT, max=RETRY_MAX_WAIT),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=_before_sleep_callback,
     retry=retry_if_exception_type((Exception,)),
     reraise=True
 )
@@ -154,7 +191,7 @@ def fallback_process_expired_files():
 @retry(
     stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
     wait=wait_exponential(multiplier=1, min=RETRY_MIN_WAIT, max=RETRY_MAX_WAIT),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=_before_sleep_callback,
     retry=retry_if_exception_type((Exception,)),
     reraise=True
 )

@@ -238,6 +238,7 @@ class BatchRematchResult(BaseModel):
     matched: int
     updated: int
     dry_run: bool
+    changes: List[dict] = []
 
 
 class AuditStatsResponse(BaseModel):
