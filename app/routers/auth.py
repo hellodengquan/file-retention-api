@@ -32,7 +32,8 @@ def login(
         )
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+        data={"sub": user.username}, expires_delta=access_token_expires,
+        token_version=user.token_version
     )
     if request:
         ip = get_client_ip(request)

@@ -226,3 +226,33 @@ class ExtensionCancelRequest(BaseModel):
 
 class ForceResetPassword(BaseModel):
     new_password: str = Field(..., min_length=6)
+
+
+class BatchRematchRequest(BaseModel):
+    business_category: Optional[str] = None
+    dry_run: Optional[bool] = False
+
+
+class BatchRematchResult(BaseModel):
+    total: int
+    matched: int
+    updated: int
+    dry_run: bool
+
+
+class AuditStatsResponse(BaseModel):
+    total_logs: int
+    today_logs: int
+    action_stats: List[dict]
+    resource_type_stats: List[dict]
+    user_stats: List[dict]
+    daily_stats: List[dict]
+
+
+class NotificationResponse(BaseModel):
+    id: int
+    type: str
+    title: str
+    content: str
+    is_read: bool
+    created_at: datetime

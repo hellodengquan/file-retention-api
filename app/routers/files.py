@@ -13,7 +13,7 @@ from app import crud
 from app.models import User
 from app.schemas import (
     FileRecordCreate, FileRecordUpdate, FileRecordResponse, PaginatedResponse,
-    FileRestoreRequest
+    FileRestoreRequest, BatchRematchRequest, BatchRematchResult
 )
 from typing import List
 
@@ -143,6 +143,12 @@ def restore_archived_file(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="权限不足"
         )
+    can_restore, msg = crud.can_restore_file(db, file_id)
+    if not can_restore:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=msg
+        )
     restored = crud.restore_file(db, file_id)
     ip = get_client_ip(request)
     reason = restore_req.reason or "未填写原因"
@@ -173,3 +179,29 @@ def delete_file(
         f"删除文件记录: {file.file_name}", ip
     )
     return {"message": "文件记录删除成功"}
+
+
+@router.post("/batch-rematch", response_model=BatchRematchResult, dependencies=[Depends(role_admin)])
+def batch_rematch_policies(
+    rematch_req: BatchRematchRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user_checked)
+):
+    total, matched, updated = crud.batch_rematch_policies(
+        db, business_category=rematch_req.business_category,
+        dry_run=rematch_req.dry_run
+    )
+    ip = get_client_ip(request)
+    log_audit(
+        db, current_user, "batch_rematch_policies", "policy", None,
+        f"批量策略重匹配: 类别={rematch_req.business_category or '全部'}, "
+        f"总数={total}, 匹配={matched}, 更新={updated}, dry_run={rematch_req.dry_run}",
+        ip
+    )
+    return {
+        "total": total,
+        "matched": matched,
+        "updated": updated,
+        "dry_run": rematch_req.dry_run
+    }

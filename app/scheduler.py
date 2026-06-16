@@ -20,7 +20,9 @@ from app.models import AuditLog, FileRecord
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRY_ATTEMPTS = 5
+MAX_RETRY_ATTEMPTS = settings.SCHEDULER_MAX_RETRY_ATTEMPTS
+RETRY_MIN_WAIT = settings.SCHEDULER_RETRY_MIN_WAIT_SECONDS
+RETRY_MAX_WAIT = settings.SCHEDULER_RETRY_MAX_WAIT_SECONDS
 
 
 def log_job_failure(job_id: str, exception: Exception):
@@ -57,7 +59,7 @@ def scheduler_event_listener(event: JobEvent):
 
 @retry(
     stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
-    wait=wait_exponential(multiplier=1, min=5, max=60),
+    wait=wait_exponential(multiplier=1, min=RETRY_MIN_WAIT, max=RETRY_MAX_WAIT),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     retry=retry_if_exception_type((Exception,)),
     reraise=True
@@ -151,7 +153,7 @@ def fallback_process_expired_files():
 
 @retry(
     stop=stop_after_attempt(MAX_RETRY_ATTEMPTS),
-    wait=wait_exponential(multiplier=1, min=5, max=60),
+    wait=wait_exponential(multiplier=1, min=RETRY_MIN_WAIT, max=RETRY_MAX_WAIT),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     retry=retry_if_exception_type((Exception,)),
     reraise=True

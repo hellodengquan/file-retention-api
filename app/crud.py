@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 
 from app.auth import get_password_hash
+from app.config import settings
 from app.models import (
     User, RetentionPolicy, FileRecord, ExtensionRequest, AuditLog
 )
@@ -63,6 +64,7 @@ def update_user_password(db: Session, user_id: int, new_password: str, clear_mus
     db_user.hashed_password = get_password_hash(new_password)
     if clear_must_change:
         db_user.must_change_password = False
+    db_user.token_version = db_user.token_version + 1 if db_user.token_version else 2
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -247,6 +249,19 @@ def update_file(db: Session, file_id: int, file_in: FileRecordUpdate) -> Optiona
     return db_file
 
 
+def can_restore_file(db: Session, file_id: int) -> Tuple[bool, str]:
+    db_file = get_file(db, file_id)
+    if not db_file:
+        return False, "文件不存在"
+    if db_file.status not in ("archived", "expired"):
+        return False, "只有已归档或已过期的文件才能恢复"
+    if db_file.archived_at:
+        window_days = settings.ARCHIVE_RESTORE_WINDOW_DAYS
+        if datetime.utcnow() - db_file.archived_at > timedelta(days=window_days):
+            return False, f"已超过归档恢复时间窗口（{window_days}天），无法恢复"
+    return True, ""
+
+
 def restore_file(db: Session, file_id: int) -> Optional[FileRecord]:
     db_file = get_file(db, file_id)
     if not db_file:
@@ -289,6 +304,44 @@ def get_expired_files(db: Session) -> List[FileRecord]:
         FileRecord.expiry_date <= now,
         FileRecord.status == "active"
     ).all()
+
+
+def batch_rematch_policies(
+    db: Session,
+    business_category: Optional[str] = None,
+    dry_run: bool = False
+) -> Tuple[int, int, int]:
+    query = db.query(FileRecord).filter(FileRecord.status == "active")
+    if business_category:
+        query = query.filter(FileRecord.business_category == business_category)
+    
+    total_files = query.count()
+    matched_count = 0
+    updated_count = 0
+    
+    for file_record in query.all():
+        policy = get_policy_by_category(db, file_record.business_category)
+        if policy:
+            matched_count += 1
+            new_expiry = file_record.upload_date + timedelta(days=policy.retention_days)
+            if file_record.last_extended_at and file_record.expiry_date:
+                original_expiry = file_record.upload_date + timedelta(
+                    days=getattr(file_record.policy, 'retention_days', 0) if file_record.policy else 0
+                )
+                extension_days = (file_record.expiry_date - original_expiry).days
+                if extension_days > 0:
+                    new_expiry = new_expiry + timedelta(days=extension_days)
+            
+            if file_record.expiry_date != new_expiry or file_record.policy_id != policy.id:
+                updated_count += 1
+                if not dry_run:
+                    file_record.policy_id = policy.id
+                    file_record.expiry_date = new_expiry
+    
+    if not dry_run:
+        db.commit()
+    
+    return total_files, matched_count, updated_count
 
 
 def create_extension_request(

@@ -117,6 +117,13 @@ def cancel_extension_request(
         db, current_user, "cancel_extension_request", "extension", request_id,
         f"取消延期申请: 文件ID={ext_request.file_id}, 原因: {reason}", ip
     )
+
+    log_audit(
+        db, current_user, "notify_cancel_extension", "notification", None,
+        f"延期申请已取消通知: 申请ID={request_id}, 文件ID={ext_request.file_id}, "
+        f"申请人={ext_request.requester_id}, 原因: {reason}",
+        ip
+    )
     return cancelled
 
 

@@ -19,6 +19,7 @@ class User(Base):
     role = Column(String(20), nullable=False, default="operator")
     is_active = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    token_version = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     extension_requests = relationship("ExtensionRequest", foreign_keys="ExtensionRequest.requester_id", back_populates="requester")

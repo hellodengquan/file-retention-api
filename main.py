@@ -1,16 +1,20 @@
 import logging
+import time
 from contextlib import asynccontextmanager
+from collections import defaultdict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
 
 from app.database import engine, Base, SessionLocal
 from app.models import User, RetentionPolicy
 from app.auth import get_password_hash
+from app.config import settings
 from app.routers import auth, users, policies, files, extensions, audit_logs
 from app.scheduler import start_scheduler, stop_scheduler
 
@@ -20,7 +24,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+def get_client_ip(request: Request) -> str:
+    client_ip = request.client.host if request.client else "unknown"
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    return client_ip
+
+
+limiter = Limiter(key_func=get_client_ip, default_limits=["60/minute"])
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+        self._local_storage = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next):
+        client_ip = get_client_ip(request)
+        if client_ip in settings.RATE_LIMIT_WHITELIST_IPS:
+            response = await call_next(request)
+            response.headers["X-RateLimit-Whitelisted"] = "true"
+            return response
+
+        now = time.time()
+        window_start = now - 60
+        self._local_storage[client_ip] = [
+            t for t in self._local_storage[client_ip] if t > window_start
+        ]
+
+        if len(self._local_storage[client_ip]) >= 60:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="请求过于频繁，请稍后再试",
+                headers={"Retry-After": "60"}
+            )
+
+        self._local_storage[client_ip].append(now)
+        response = await call_next(request)
+        remaining = 60 - len(self._local_storage[client_ip])
+        response.headers["X-RateLimit-Limit"] = "60"
+        response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
+        return response
 
 
 def init_db():
@@ -130,13 +176,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="文件保留策略API",
     description="文件保留策略管理系统API，支持按业务类别设置保留期限、到期自动归档/删除、人工延期审批、操作日志记录等功能",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -148,10 +193,9 @@ app.add_middleware(
 
 api_router = FastAPI(
     title="文件保留策略API - v1",
-    version="1.1.0"
+    version="1.2.0"
 )
 api_router.state.limiter = limiter
-api_router.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 api_router.include_router(auth.router)
 api_router.include_router(users.router)
@@ -167,10 +211,10 @@ app.mount("/api/v1", api_router)
 def root():
     return {
         "name": "文件保留策略API",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "docs": "/docs",
         "api_prefix": "/api/v1",
-        "rate_limit": "60 requests/minute per IP"
+        "rate_limit": "60 requests/minute per IP (with whitelist support)"
     }
 
 
